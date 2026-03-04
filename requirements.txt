@@ -1,0 +1,5 @@
+pydantic-settings>=2.0
+requests>=2.31
+# nnunetv2 must be installed separately in the conda environment:
+#   conda activate nnunet_trainer
+#   pip install nnunetv2
