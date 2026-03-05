@@ -73,12 +73,16 @@ execute_job:
      monitor thread: tail slurm_{job_id}.log → parse "Preprocessing case" → POST preprocessing_progress
      wait_for_slurm_job (poll squeue/sacct every 30s)
   6. PUT status → "training"
-     for fold in 0..4:
-       write DATA_DIR/slurm_scripts/{job_id}_train_{config}_fold{n}.sh
-       sbatch → SLURM job ID
-       monitor thread: tail training_log_*.txt → parse epochs → POST training_progress every epoch
+     submit all 5 folds simultaneously:
+       for fold in 0..4:
+         write DATA_DIR/slurm_scripts/{job_id}_train_{config}_fold{n}.sh
+         sbatch → SLURM job ID
+     monitor all folds in parallel (one thread per fold):
+       tail training_log_*.txt → parse epochs → POST training_progress every epoch
        upload log text every 60s
-       wait_for_slurm_job
+     wait for all SLURM jobs concurrently (one waiter thread per fold)
+     if any fold fails → abort_event cancels remaining folds → raise SlurmJobFailed
+     for fold in 0..4:
        POST validation_result from fold_{n}/validation/summary.json
   7. PUT status → "uploading"
      nnUNetv2_export_model_to_zip (runs locally, not via SLURM)

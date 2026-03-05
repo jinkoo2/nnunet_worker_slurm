@@ -189,41 +189,38 @@ def _execute_job(client: DashboardClient, job: dict):
             trainer.run_preprocess(job_id, dataset_name, preprocess_progress, cancel_event)
             notifier.on_preprocess_complete(wn, job_id)
 
-        # 6. Train all 5 folds via SLURM (one job per fold)
+        # 6. Train all 5 folds via SLURM (all submitted at once, monitored in parallel)
         client.update_job_status(job_id, "training")
 
-        for fold in range(5):
-            logger.info(f"--- Fold {fold}/4 ---")
+        folds = list(range(5))
+        for fold in folds:
             notifier.on_fold_start(wn, job_id, fold)
 
-            def make_progress_cb(f):
-                def cb(fold, epoch, learning_rate, train_loss, val_loss, pseudo_dice, epoch_time_s):
-                    client.report_training_progress(
-                        job_id, fold, epoch,
-                        learning_rate=learning_rate,
-                        train_loss=train_loss,
-                        val_loss=val_loss,
-                        pseudo_dice=pseudo_dice,
-                        epoch_time_s=epoch_time_s,
-                    )
-                return cb
-
-            def make_log_cb(f):
-                def cb(fold, text):
-                    client.upload_log(job_id, fold, text)
-                return cb
-
-            trainer.run_train_fold(
-                job_id,
-                dataset_name,
-                configuration,
-                fold,
-                progress_callback=make_progress_cb(fold),
-                log_upload_callback=make_log_cb(fold),
-                cancel_event=cancel_event,
+        def progress_cb(fold, epoch, learning_rate, train_loss, val_loss, pseudo_dice, epoch_time_s):
+            client.report_training_progress(
+                job_id, fold, epoch,
+                learning_rate=learning_rate,
+                train_loss=train_loss,
+                val_loss=val_loss,
+                pseudo_dice=pseudo_dice,
+                epoch_time_s=epoch_time_s,
             )
-            notifier.on_fold_complete(wn, job_id, fold)
 
+        def log_cb(fold, text):
+            client.upload_log(job_id, fold, text)
+
+        trainer.run_train_all_folds(
+            job_id,
+            dataset_name,
+            configuration,
+            folds,
+            progress_callback=progress_cb,
+            log_upload_callback=log_cb,
+            cancel_event=cancel_event,
+        )
+
+        for fold in folds:
+            notifier.on_fold_complete(wn, job_id, fold)
             summary = trainer.read_validation_result(dataset_name, configuration, fold)
             if summary:
                 client.report_validation_result(job_id, fold, summary)

@@ -364,6 +364,161 @@ def run_train_fold(
 
 
 # ---------------------------------------------------------------------------
+# Parallel training: all folds submitted at once
+# ---------------------------------------------------------------------------
+
+def run_train_all_folds(
+    job_id: str,
+    dataset_name: str,
+    configuration: str,
+    folds: list,
+    progress_callback: Callable,
+    log_upload_callback: Callable,
+    cancel_event: Optional[threading.Event] = None,
+) -> None:
+    """
+    Submit all fold training jobs to SLURM simultaneously and monitor them in parallel.
+    Waits for all folds to complete before returning.
+
+    If any fold fails, remaining in-flight folds are cancelled and SlurmJobFailed is raised.
+    If cancel_event is set (user cancellation), all folds are cancelled and JobCancelled is raised.
+
+    Calls progress_callback(fold, epoch, lr, train_loss, val_loss, pseudo_dice, epoch_time_s).
+    Calls log_upload_callback(fold, text) periodically per fold.
+    """
+    dataset_num = get_dataset_num(dataset_name)
+    logger.info(
+        f"Submitting {len(folds)} training SLURM jobs in parallel: "
+        f"{dataset_name} {configuration} folds={folds}"
+    )
+
+    scripts_dir = Path(settings.DATA_DIR) / "slurm_scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Submit all folds
+    slurm_job_ids: dict = {}
+    for fold in folds:
+        log_dir = Path(settings.DATA_DIR) / "logs" / job_id / f"fold_{fold}"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        script_path = scripts_dir / f"{job_id}_train_{configuration}_fold{fold}.sh"
+        slurm.write_train_script(
+            script_path=script_path,
+            dataset_num=dataset_num,
+            configuration=configuration,
+            fold=fold,
+            log_dir=log_dir,
+            data_dir=settings.DATA_DIR,
+            conda_env=settings.CONDA_ENV,
+        )
+        slurm_job_ids[fold] = slurm.sbatch(str(script_path))
+        logger.info(f"Training fold {fold} submitted as SLURM job {slurm_job_ids[fold]}")
+
+    # abort_event: set when any fold fails OR user cancels — scancels all remaining folds
+    abort_event = threading.Event()
+    if cancel_event is not None:
+        def _watch_user_cancel():
+            cancel_event.wait()
+            abort_event.set()
+        threading.Thread(target=_watch_user_cancel, daemon=True).start()
+
+    fold_exceptions: dict = {}
+    lock = threading.Lock()
+
+    def run_fold_waiter(fold: int, slurm_job_id: str) -> None:
+        try:
+            slurm.wait_for_slurm_job(slurm_job_id, abort_event)
+        except Exception as e:
+            with lock:
+                fold_exceptions[fold] = e
+            abort_event.set()  # trigger cancellation of other still-running folds
+        finally:
+            logger.info(f"Fold {fold} waiter finished (SLURM job {slurm_job_id})")
+
+    stop_monitor = threading.Event()
+
+    def run_fold_monitor(fold: int) -> None:
+        last_reported_epoch = -1
+        last_log_upload = time.time()
+        while not stop_monitor.is_set():
+            stop_monitor.wait(5)
+            log_path = find_latest_training_log(dataset_name, configuration, fold)
+            if log_path is None:
+                continue
+            try:
+                content = log_path.read_text(errors="replace")
+            except Exception:
+                continue
+            epoch_data = _parse_all_epochs(content)
+            for ep_num in sorted(epoch_data.keys()):
+                if ep_num > last_reported_epoch:
+                    ep = epoch_data[ep_num]
+                    try:
+                        progress_callback(
+                            fold=fold,
+                            epoch=ep_num,
+                            learning_rate=ep.get("learning_rate"),
+                            train_loss=ep.get("train_loss"),
+                            val_loss=ep.get("val_loss"),
+                            pseudo_dice=ep.get("pseudo_dice"),
+                            epoch_time_s=ep.get("epoch_time_s"),
+                        )
+                        last_reported_epoch = ep_num
+                    except Exception as e:
+                        logger.warning(f"Training progress callback failed fold {fold}: {e}")
+            if time.time() - last_log_upload >= 60:
+                try:
+                    log_upload_callback(fold, content)
+                    last_log_upload = time.time()
+                except Exception as e:
+                    logger.warning(f"Log upload failed fold {fold}: {e}")
+
+    monitor_threads = [
+        threading.Thread(target=run_fold_monitor, args=(fold,), daemon=True)
+        for fold in folds
+    ]
+    waiter_threads = [
+        threading.Thread(target=run_fold_waiter, args=(fold, slurm_job_ids[fold]), daemon=True)
+        for fold in folds
+    ]
+    for t in monitor_threads:
+        t.start()
+    for t in waiter_threads:
+        t.start()
+
+    for t in waiter_threads:
+        t.join()
+
+    stop_monitor.set()
+    for t in monitor_threads:
+        t.join(timeout=10)
+
+    # Final log uploads
+    for fold in folds:
+        log_path = find_latest_training_log(dataset_name, configuration, fold)
+        if log_path is not None:
+            try:
+                log_upload_callback(fold, log_path.read_text(errors="replace"))
+            except Exception as e:
+                logger.warning(f"Final log upload failed fold {fold}: {e}")
+
+    logger.info(f"All {len(folds)} training folds finished")
+
+    # User cancellation takes priority
+    if cancel_event is not None and cancel_event.is_set():
+        raise JobCancelled("Training cancelled by user")
+
+    # Surface real failures (not secondary JobCancelled from abort cascade)
+    real_failures = {f: e for f, e in fold_exceptions.items() if not isinstance(e, JobCancelled)}
+    if real_failures:
+        fold, exc = next(iter(real_failures.items()))
+        raise SlurmJobFailed(f"Fold {fold} failed: {exc}")
+
+    if fold_exceptions:
+        fold, exc = next(iter(fold_exceptions.items()))
+        raise exc
+
+
+# ---------------------------------------------------------------------------
 # Log parsing
 # ---------------------------------------------------------------------------
 
