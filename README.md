@@ -13,23 +13,62 @@ nnUNet training worker that integrates with [nnunet_dashboard](https://github.co
 
 ## Requirements
 
-- SLURM (`sbatch`, `squeue`, `sacct`, `scancel` in PATH — `module load slurm`)
-- Conda environment with `nnunetv2` installed
-- Python 3.12, `requests`, `pydantic-settings`
+- Linux with SLURM (`module load slurm` must make `sbatch`, `squeue`, `sacct`, `scancel` available)
+- Miniconda / Conda (`module load miniconda`)
+- Access to a running [nnunet_dashboard](https://github.com/jinkoo2/nnunet_dashboard) instance
 
-## Setup
+## Installation
+
+**1. Clone the repository**
 
 ```bash
-conda create -n nnunet_trainer python=3.12 -y
-conda activate nnunet_trainer
-pip install nnunetv2
-pip install -r requirements.txt
-
-cp .env.example .env
-# Edit .env — set DASHBOARD_URL, DASHBOARD_API_KEY, WORKER_NAME, DATA_DIR, partitions
+git clone https://github.com/jinkoo2/nnunet_worker_slurm.git
+cd nnunet_worker_slurm
 ```
 
-## Running
+**2. Create the data directory**
+
+```bash
+mkdir -p /path/to/nnunet-data
+```
+
+Set this path as `DATA_DIR` in your `.env` file (next step).
+
+**3. Configure the worker**
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set at minimum:
+
+```ini
+DASHBOARD_URL=https://your-dashboard-host
+DASHBOARD_API_KEY=your-api-key
+WORKER_NAME=worker-slurm01        # unique name shown in the dashboard
+DATA_DIR=/path/to/nnunet-data     # must exist and have sufficient storage
+CONDA_ENV=nnunet_trainer          # conda env name (created automatically if missing)
+```
+
+See the [Configuration](#configuration) section for all available options.
+
+## Starting the Worker
+
+The simplest way is to use the provided start scripts, which handle module loading, conda environment creation, and dependency installation automatically:
+
+```bash
+bash start_worker_b40x4.sh        # uses .env.b40x4      (b40x4 partition)
+bash start_worker_b40x4-long.sh   # uses .env.b40x4-long (b40x4-long partition)
+```
+
+Each script:
+1. Reads `CONDA_ENV` from its `.env` file
+2. Loads SLURM and Miniconda modules
+3. Creates the conda environment if it does not exist
+4. Installs/updates `requirements.txt` and `nnunetv2`
+5. Starts `python main.py` with the selected `.env` file
+
+**Manual start** (if you manage the environment yourself):
 
 ```bash
 module load slurm
@@ -37,11 +76,12 @@ conda activate nnunet_trainer
 python main.py
 ```
 
-Or use the provided convenience scripts:
+To use a specific `.env` file:
 
 ```bash
-bash start_worker_b40x4.sh        # b40x4 partition
-bash start_worker_b40x4-long.sh   # b40x4-long partition
+module load slurm
+conda activate nnunet_trainer
+ENV_FILE=.env.b40x4 python main.py
 ```
 
 ## Configuration
