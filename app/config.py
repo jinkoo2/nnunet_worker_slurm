@@ -1,3 +1,4 @@
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,7 +46,7 @@ class Settings(BaseSettings):
     SLURM_MAIL_USER: str = ""
     SLURM_MAIL_TYPE: str = "ALL"
 
-    model_config = SettingsConfigDict(env_file=".env", extra="allow")
+    model_config = SettingsConfigDict(env_file=os.environ.get("ENV_FILE", ".env"), extra="allow")
 
 
 settings = Settings()
