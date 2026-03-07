@@ -80,8 +80,11 @@ def run():
         time.sleep(settings.POLL_INTERVAL_S)
 
 
-def _register_with_retry(client: DashboardClient, max_attempts: int = 10) -> str:
-    for attempt in range(1, max_attempts + 1):
+def _register_with_retry(client: DashboardClient) -> str:
+    """Retry registration indefinitely until the dashboard is reachable."""
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             worker = client.register_worker()
             worker_id = worker["id"]
@@ -92,10 +95,10 @@ def _register_with_retry(client: DashboardClient, max_attempts: int = 10) -> str
             notifier.on_registered(settings.WORKER_NAME, worker_id, settings.DASHBOARD_URL)
             return worker_id
         except Exception as e:
-            wait = min(30, 5 * attempt)
-            logger.warning(f"Registration attempt {attempt}/{max_attempts} failed: {e}. Retrying in {wait}s...")
-            if attempt == max_attempts:
-                raise
+            wait = min(300, 5 * attempt)  # back off up to 5 minutes
+            logger.warning(
+                f"Registration attempt {attempt} failed: {e}. Retrying in {wait}s..."
+            )
             time.sleep(wait)
 
 
@@ -223,8 +226,11 @@ def _execute_job(client: DashboardClient, job: dict):
             notifier.on_fold_complete(wn, job_id, fold)
             summary = trainer.read_validation_result(dataset_name, configuration, fold)
             if summary:
-                client.report_validation_result(job_id, fold, summary)
-                logger.info(f"Validation result reported for fold {fold}")
+                try:
+                    client.report_validation_result(job_id, fold, summary)
+                    logger.info(f"Validation result reported for fold {fold}")
+                except Exception as e:
+                    logger.warning(f"Failed to report validation result for fold {fold}: {e}")
             else:
                 logger.warning(f"No validation summary found for fold {fold}")
 
@@ -237,7 +243,10 @@ def _execute_job(client: DashboardClient, job: dict):
         notifier.on_upload_complete(wn, job_id)
 
         # 8. Done
-        client.update_job_status(job_id, "done")
+        try:
+            client.update_job_status(job_id, "done")
+        except Exception as e:
+            logger.warning(f"Failed to mark job as done (training succeeded): {e}")
         logger.info(f"=== Job {job_id[:8]}… DONE ===")
         notifier.on_job_done(wn, job_id)
 

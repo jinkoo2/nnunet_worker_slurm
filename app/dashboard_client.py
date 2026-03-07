@@ -1,9 +1,16 @@
 import os
 import logging
+import time
 import requests
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+_RETRY_ON = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 
 class DashboardClient:
@@ -11,34 +18,62 @@ class DashboardClient:
         self.base = settings.DASHBOARD_URL.rstrip("/")
         self.headers = {"X-Api-Key": settings.DASHBOARD_API_KEY}
 
+    def _request_with_retry(self, fn, max_retries=3):
+        """Call fn() and retry on transient network errors or 5xx responses."""
+        for attempt in range(max_retries + 1):
+            try:
+                r = fn()
+                if r.status_code >= 500 and attempt < max_retries:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        f"Dashboard returned {r.status_code}, retrying in {wait}s "
+                        f"(attempt {attempt + 1}/{max_retries})..."
+                    )
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                return r
+            except _RETRY_ON as e:
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        f"Dashboard unreachable ({e.__class__.__name__}: {e}), "
+                        f"retrying in {wait}s (attempt {attempt + 1}/{max_retries})..."
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
+
     def _get(self, path, params=None):
-        r = requests.get(
-            f"{self.base}{path}", headers=self.headers, params=params, timeout=30
+        r = self._request_with_retry(
+            lambda: requests.get(
+                f"{self.base}{path}", headers=self.headers, params=params, timeout=30
+            )
         )
-        r.raise_for_status()
         return r.json()
 
     def _post(self, path, json=None, data=None, files=None, timeout=30):
-        # Don't send Content-Type header when using files (requests sets it with boundary)
         headers = dict(self.headers)
         if files:
             headers.pop("Content-Type", None)
-        r = requests.post(
-            f"{self.base}{path}",
-            headers=headers,
-            json=json,
-            data=data,
-            files=files,
-            timeout=timeout,
+        r = self._request_with_retry(
+            lambda: requests.post(
+                f"{self.base}{path}",
+                headers=headers,
+                json=json,
+                data=data,
+                files=files,
+                timeout=timeout,
+            )
         )
-        r.raise_for_status()
         return r.json()
 
     def _put(self, path, json=None):
-        r = requests.put(
-            f"{self.base}{path}", headers=self.headers, json=json, timeout=30
+        r = self._request_with_retry(
+            lambda: requests.put(
+                f"{self.base}{path}", headers=self.headers, json=json, timeout=30
+            )
         )
-        r.raise_for_status()
         return r.json()
 
     # -------------------------------------------------------------------------
