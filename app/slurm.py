@@ -18,6 +18,10 @@ class SlurmJobFailed(Exception):
     """Raised when a SLURM job ends in a non-COMPLETED terminal state."""
 
 
+class SlurmJobTimeout(Exception):
+    """Raised when a SLURM job ends with state TIMEOUT (can be resubmitted to continue)."""
+
+
 class JobCancelled(Exception):
     """Raised when a cancel_event triggers scancel of a running SLURM job."""
 
@@ -100,7 +104,11 @@ def wait_for_slurm_job(
         if state is None or state == "COMPLETED":
             logger.info(f"SLURM job {slurm_job_id} completed successfully")
             return
-        if state in ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
+        if state == "TIMEOUT":
+            raise SlurmJobTimeout(
+                f"SLURM job {slurm_job_id} ended with state: TIMEOUT"
+            )
+        if state in ("FAILED", "CANCELLED", "OUT_OF_MEMORY",
                      "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE"):
             raise SlurmJobFailed(
                 f"SLURM job {slurm_job_id} ended with state: {state}"

@@ -425,14 +425,27 @@ def run_train_all_folds(
     lock = threading.Lock()
 
     def run_fold_waiter(fold: int, slurm_job_id: str) -> None:
+        current_job_id = slurm_job_id
+        script_path = scripts_dir / f"{job_id}_train_{configuration}_fold{fold}.sh"
         try:
-            slurm.wait_for_slurm_job(slurm_job_id, abort_event)
+            while True:
+                try:
+                    slurm.wait_for_slurm_job(current_job_id, abort_event)
+                    break  # completed successfully
+                except slurm.SlurmJobTimeout:
+                    logger.warning(
+                        f"Fold {fold} SLURM job {current_job_id} timed out — "
+                        f"resubmitting {script_path} to continue from checkpoint"
+                    )
+                    current_job_id = slurm.sbatch(str(script_path))
+                    slurm_job_ids[fold] = current_job_id
+                    logger.info(f"Fold {fold} resubmitted as SLURM job {current_job_id}")
         except Exception as e:
             with lock:
                 fold_exceptions[fold] = e
             abort_event.set()  # trigger cancellation of other still-running folds
         finally:
-            logger.info(f"Fold {fold} waiter finished (SLURM job {slurm_job_id})")
+            logger.info(f"Fold {fold} waiter finished (SLURM job {current_job_id})")
 
     stop_monitor = threading.Event()
 
