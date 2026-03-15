@@ -156,6 +156,26 @@ def is_dataset_downloaded(dataset_id: str) -> bool:
     return zip_path.exists() and zip_path.stat().st_size > 0
 
 
+# When these exist under preprocessed/Datasetxxx_yyy/, we consider the dataset
+# already extracted (zip may have been removed to save space).
+EXTRACTED_JSON_MARKERS = ("dataset.json", "dataset_fingerprint.json", "nnUNetPlans.json")
+
+
+def is_dataset_already_extracted(dataset_name: str) -> bool:
+    """
+    Return True if preprocessed/dataset_name/ contains the three JSON files that
+    indicate the dataset was previously extracted (raw + preprocessed layout present).
+    Allows skipping download/extract when the zip was removed to save space.
+    """
+    preprocessed_dir = Path(settings.DATA_DIR) / "preprocessed" / dataset_name
+    if not preprocessed_dir.is_dir():
+        return False
+    for name in EXTRACTED_JSON_MARKERS:
+        if not (preprocessed_dir / name).is_file():
+            return False
+    return True
+
+
 PREPROCESSING_FLAG = "preprocessing_completed.txt"
 
 
