@@ -387,6 +387,20 @@ def run_train_all_folds(
     Calls log_upload_callback(fold, text) periodically per fold.
     """
     dataset_num = get_dataset_num(dataset_name)
+
+    # Skip folds whose validation is already complete
+    pending_folds = []
+    for fold in folds:
+        if get_validation_summary_path(dataset_name, configuration, fold).exists():
+            logger.info(f"Fold {fold} validation already complete (summary.json exists) — skipping")
+        else:
+            pending_folds.append(fold)
+
+    if not pending_folds:
+        logger.info("All folds already complete — nothing to submit")
+        return
+
+    folds = pending_folds
     logger.info(
         f"Submitting {len(folds)} training SLURM jobs in parallel: "
         f"{dataset_name} {configuration} folds={folds}"

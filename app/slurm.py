@@ -155,7 +155,7 @@ def _conda_block(conda_env: str) -> str:
     return textwrap.dedent(f"""\
         # Load conda and activate environment
         module load miniconda
-        source $(conda info --base)/etc/profile.d/conda.sh
+        source /lustre/nvwulf/software/miniconda3/etc/profile.d/conda.sh
         conda activate "{conda_env}"
         echo "Activated conda env: {conda_env}"
         echo "Python: $(which python)"
@@ -204,7 +204,7 @@ def write_preprocess_script(
         echo "=== nnUNetv2_preprocess: Dataset {dataset_num} ==="
         echo ""
 
-        nnUNetv2_preprocess \\
+        ${{CONDA_PREFIX}}/bin/nnUNetv2_preprocess \\
             -d "{dataset_num}" \\
             -np "{settings.NUM_PREPROCESSING_WORKERS}" \\
             --verbose
@@ -256,15 +256,17 @@ def write_train_script(
         export nnUNet_preprocessed="{data_dir}/preprocessed"
         export nnUNet_results="{data_dir}/results"
         export TORCH_COMPILE_DISABLE=1
+        export TMPDIR="{data_dir}/tmp"
+        mkdir -p "$TMPDIR"
 
         {_conda_block(conda_env)}
 
-        echo "nnUNetv2_train: $(which nnUNetv2_train)"
+        echo "nnUNetv2_train: ${{CONDA_PREFIX}}/bin/nnUNetv2_train"
         echo ""
         echo "=== nnUNetv2_train: {dataset_num} {configuration} fold {fold} ==="
         echo ""
 
-        nnUNetv2_train \\
+        ${{CONDA_PREFIX}}/bin/nnUNetv2_train \\
             -device cuda \\
             -num_gpus {settings.SLURM_GPUS_TRAIN} \\
             --c \\
