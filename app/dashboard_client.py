@@ -111,6 +111,10 @@ class DashboardClient:
     def get_pending_jobs(self, worker_id: str) -> list:
         return self._get("/api/jobs/", params={"worker_id": worker_id, "status": "pending"})
 
+    def get_worker_jobs(self, worker_id: str) -> list:
+        """All non-deleted jobs assigned to this worker, any status."""
+        return self._get("/api/jobs/", params={"worker_id": worker_id})
+
     def update_job_status(
         self, job_id: str, status: str, error_message: str = None,
         trainer: str = None, plans_identifier: str = None,

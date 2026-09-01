@@ -160,9 +160,23 @@ def _read_num_training(dataset_name: str) -> int:
 
 
 def is_dataset_downloaded(dataset_id: str) -> bool:
-    """Return True if the dataset ZIP is already on disk."""
+    """
+    Return True if the dataset ZIP is already on disk and intact.
+
+    Validates with zipfile.is_zipfile() rather than just checking size > 0:
+    an interrupted download (network blip, worker killed mid-transfer) can
+    leave a nonempty but truncated file with a valid-looking header and no
+    End-Of-Central-Directory record, which would otherwise be treated as
+    "already downloaded" forever and fail every future job for that dataset
+    with "File is not a zip file" the instant setup_dataset() opens it.
+    """
     zip_path = Path(settings.DATA_DIR) / "downloads" / f"{dataset_id}.zip"
-    return zip_path.exists() and zip_path.stat().st_size > 0
+    if not zip_path.exists() or zip_path.stat().st_size == 0:
+        return False
+    if not zipfile.is_zipfile(zip_path):
+        logger.warning(f"Downloaded ZIP {zip_path} is corrupt/incomplete — will re-download")
+        return False
+    return True
 
 
 # When these exist under preprocessed/Datasetxxx_yyy/, we consider the dataset
@@ -219,7 +233,6 @@ def run_preprocess(
     """
     dataset_num = get_dataset_num(dataset_name)
     total_images = _read_num_training(dataset_name)
-    logger.info(f"Submitting preprocessing SLURM job for {dataset_name} (num={dataset_num}, total={total_images})")
 
     log_dir = Path(settings.DATA_DIR) / "logs" / job_id / "preprocess"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -228,16 +241,27 @@ def run_preprocess(
     scripts_dir.mkdir(parents=True, exist_ok=True)
     script_path = scripts_dir / f"{job_id}_preprocess.sh"
 
-    slurm.write_preprocess_script(
-        script_path=script_path,
-        dataset_num=dataset_num,
-        plans_identifier=plans_identifier,
-        log_dir=log_dir,
-        data_dir=settings.DATA_DIR,
-        conda_env=settings.CONDA_ENV,
-    )
-    slurm_job_id = slurm.sbatch(str(script_path))
-    logger.info(f"Preprocessing submitted as SLURM job {slurm_job_id}")
+    # Reattach to an already-running SLURM job for this job_id if one exists
+    # (e.g. this worker crashed/restarted mid-preprocess) instead of
+    # resubmitting a duplicate.
+    existing = slurm.find_by_comment(job_id, exact=True)
+    existing = [j for j in existing if j["name"].startswith("nnunet_preprocess_")]
+    if existing:
+        slurm_job_id = existing[0]["slurm_job_id"]
+        logger.info(f"Reattaching to existing preprocessing SLURM job {slurm_job_id} for job {job_id[:8]}…")
+    else:
+        logger.info(f"Submitting preprocessing SLURM job for {dataset_name} (num={dataset_num}, total={total_images})")
+        slurm.write_preprocess_script(
+            script_path=script_path,
+            job_id=job_id,
+            dataset_num=dataset_num,
+            plans_identifier=plans_identifier,
+            log_dir=log_dir,
+            data_dir=settings.DATA_DIR,
+            conda_env=settings.CONDA_ENV,
+        )
+        slurm_job_id = slurm.sbatch(str(script_path))
+        logger.info(f"Preprocessing submitted as SLURM job {slurm_job_id}")
 
     slurm_log = log_dir / f"slurm_{slurm_job_id}.log"
     start_time = time.time()
@@ -329,6 +353,7 @@ def run_train_fold(
 
     slurm.write_train_script(
         script_path=script_path,
+        job_id=job_id,
         dataset_num=dataset_num,
         configuration=configuration,
         fold=fold,
@@ -435,7 +460,7 @@ def run_train_all_folds(
     # Skip folds whose validation is already complete
     pending_folds = []
     for fold in folds:
-        if get_validation_summary_path(dataset_name, configuration, fold).exists():
+        if get_validation_summary_path(dataset_name, configuration, fold, trainer, plans_identifier).exists():
             logger.info(f"Fold {fold} validation already complete (summary.json exists) — skipping")
         else:
             pending_folds.append(fold)
@@ -445,22 +470,40 @@ def run_train_all_folds(
         return
 
     folds = pending_folds
-    logger.info(
-        f"Submitting {len(folds)} training SLURM jobs in parallel: "
-        f"{dataset_name} {configuration} folds={folds}"
-    )
 
     scripts_dir = Path(settings.DATA_DIR) / "slurm_scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
 
-    # Submit all folds
+    # Reattach to any already-running SLURM jobs for this job_id (e.g. this
+    # worker crashed/restarted mid-training) instead of resubmitting
+    # duplicates. Comment format is "{job_id}:fold{N}" — see write_train_script.
+    reattach: dict = {}
+    for entry in slurm.find_by_comment(f"{job_id}:fold", exact=False):
+        if not entry["name"].startswith("nnunet_tr_"):
+            continue
+        m = re.search(r":fold(\d+)$", entry["comment"])
+        if m:
+            reattach[int(m.group(1))] = entry["slurm_job_id"]
+
+    logger.info(
+        f"Submitting {len(folds)} training SLURM jobs in parallel: "
+        f"{dataset_name} {configuration} folds={folds}"
+        + (f" (reattaching to {sorted(reattach.keys())})" if reattach else "")
+    )
+
+    # Submit all folds (skip ones we're reattaching to)
     slurm_job_ids: dict = {}
     for fold in folds:
         log_dir = Path(settings.DATA_DIR) / "logs" / job_id / f"fold_{fold}"
         log_dir.mkdir(parents=True, exist_ok=True)
+        if fold in reattach:
+            slurm_job_ids[fold] = reattach[fold]
+            logger.info(f"Reattaching to existing training SLURM job {slurm_job_ids[fold]} for fold {fold}")
+            continue
         script_path = scripts_dir / f"{job_id}_train_{configuration}_fold{fold}.sh"
         slurm.write_train_script(
             script_path=script_path,
+            job_id=job_id,
             dataset_num=dataset_num,
             configuration=configuration,
             fold=fold,

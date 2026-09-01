@@ -63,6 +63,8 @@ def run():
     )
     hb_thread.start()
 
+    _reconcile_in_progress_jobs(client, worker_id)
+
     logger.info(f"Worker {worker_id!r} ready. Polling every {settings.POLL_INTERVAL_S}s...")
 
     while True:
@@ -100,6 +102,42 @@ def _register_with_retry(client: DashboardClient) -> str:
                 f"Registration attempt {attempt} failed: {e}. Retrying in {wait}s..."
             )
             time.sleep(wait)
+
+
+def _reconcile_in_progress_jobs(client: DashboardClient, worker_id: str) -> None:
+    """
+    On startup, resume any job already assigned to this worker that's mid-flight
+    (status "preprocessing" or "training") instead of leaving it orphaned.
+
+    This worker's poll loop only ever looks at status="pending" jobs, so if the
+    daemon dies while a job is running (crash, accidental kill, restart), the
+    underlying SLURM job(s) keep running on the cluster untouched — but nothing
+    is left watching them, so completion never gets reported and the job sits
+    stuck forever. _execute_job()'s per-stage logic already skips work that's
+    done on disk (download, extraction, preprocessing-complete flag, per-fold
+    validation summaries) or reattaches to a still-running SLURM job by comment
+    (see slurm.find_by_comment) rather than resubmitting a duplicate, so simply
+    re-entering it here is enough — no separate resume path needed.
+    """
+    try:
+        jobs = client.get_worker_jobs(worker_id)
+    except Exception as e:
+        logger.warning(f"Could not fetch jobs for reconciliation: {e}")
+        return
+
+    # "assigned" is included too: it's set right at the start of _execute_job(),
+    # before any SLURM job exists yet (still downloading/extracting), and that
+    # stage is fully idempotent on disk — safe to just re-enter from scratch.
+    in_progress = [j for j in jobs if j.get("status") in ("assigned", "preprocessing", "training")]
+    if not in_progress:
+        return
+
+    logger.info(
+        f"Found {len(in_progress)} in-progress job(s) from a previous run — resuming..."
+    )
+    for job in in_progress:
+        logger.info(f"Resuming job {job['id'][:8]}… (was: {job.get('status')})")
+        _execute_job(client, job)
 
 
 def _poll_cancellation(

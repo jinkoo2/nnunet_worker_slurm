@@ -72,6 +72,36 @@ def squeue_state(slurm_job_id: str) -> Optional[str]:
     return None
 
 
+def find_by_comment(comment: str, exact: bool = True) -> list:
+    """
+    Return queued/running SLURM jobs (belonging to the current user) whose
+    --comment matches. Used to reattach to an already-submitted job after a
+    worker restart instead of resubmitting a duplicate — see the note on
+    _slurm_header's comment param for why this only works for live jobs.
+
+    Returns a list of {"slurm_job_id", "name", "state", "comment"} dicts.
+    """
+    result = subprocess.run(
+        ["squeue", "--me", "--noheader", "--format=%i|%j|%T|%k"],
+        capture_output=True, text=True,
+    )
+    jobs = []
+    for line in result.stdout.strip().splitlines():
+        parts = line.split("|", 3)
+        if len(parts) != 4:
+            continue
+        slurm_job_id, name, state, job_comment = parts
+        matches = job_comment == comment if exact else job_comment.startswith(comment)
+        if matches:
+            jobs.append({
+                "slurm_job_id": slurm_job_id,
+                "name": name,
+                "state": state,
+                "comment": job_comment,
+            })
+    return jobs
+
+
 def scancel(slurm_job_id: str) -> None:
     """Cancel a SLURM job (fire-and-forget; errors are logged only)."""
     result = subprocess.run(["scancel", slurm_job_id], capture_output=True)
@@ -131,6 +161,7 @@ def _slurm_header(
     gpus: int = 0,
     mail_user: str = "",
     mail_type: str = "ALL",
+    comment: str = "",
 ) -> str:
     lines = [
         "#!/bin/bash",
@@ -148,6 +179,14 @@ def _slurm_header(
     if mail_user:
         lines.append(f"#SBATCH --mail-type={mail_type}")
         lines.append(f"#SBATCH --mail-user={mail_user}")
+    if comment:
+        # Tags the SLURM job with our dashboard job_id (readable live via
+        # `squeue -o %k`) so a restarted worker can reattach to an
+        # already-running job instead of resubmitting a duplicate. Note:
+        # this cluster's sacct accounting does NOT retain --comment after a
+        # job leaves the queue, so this only helps while the job is still
+        # queued/running — which is exactly the case a daemon restart needs.
+        lines.append(f"#SBATCH --comment={comment}")
     return "\n".join(lines)
 
 
@@ -164,6 +203,7 @@ def _conda_block(conda_env: str) -> str:
 
 def write_preprocess_script(
     script_path: Path,
+    job_id: str,
     dataset_num: str,
     plans_identifier: str,
     log_dir: Path,
@@ -183,6 +223,7 @@ def write_preprocess_script(
         gpus=0,  # preprocessing is CPU-only
         mail_user=settings.SLURM_MAIL_USER,
         mail_type=settings.SLURM_MAIL_TYPE,
+        comment=job_id,
     )
     body = textwrap.dedent(f"""\
 
@@ -223,6 +264,7 @@ def write_preprocess_script(
 
 def write_train_script(
     script_path: Path,
+    job_id: str,
     dataset_num: str,
     configuration: str,
     fold: int,
@@ -244,6 +286,7 @@ def write_train_script(
         gpus=settings.SLURM_GPUS_TRAIN,
         mail_user=settings.SLURM_MAIL_USER,
         mail_type=settings.SLURM_MAIL_TYPE,
+        comment=f"{job_id}:fold{fold}",
     )
     body = textwrap.dedent(f"""\
 
