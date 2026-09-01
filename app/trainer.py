@@ -58,29 +58,33 @@ def get_nnunet_env() -> dict:
     return env
 
 
-def get_fold_dir(dataset_name: str, configuration: str, fold: int) -> Path:
+def get_fold_dir(dataset_name: str, configuration: str, fold: int, trainer: str, plans_identifier: str) -> Path:
     return (
         Path(settings.DATA_DIR)
         / "results"
         / dataset_name
-        / f"nnUNetTrainer__nnUNetPlans__{configuration}"
+        / f"{trainer}__{plans_identifier}__{configuration}"
         / f"fold_{fold}"
     )
 
 
-def find_latest_training_log(dataset_name: str, configuration: str, fold: int) -> Optional[Path]:
+def find_latest_training_log(
+    dataset_name: str, configuration: str, fold: int, trainer: str, plans_identifier: str
+) -> Optional[Path]:
     """Return the most recently modified training_log_*.txt in the fold directory, or None."""
-    fold_dir = get_fold_dir(dataset_name, configuration, fold)
+    fold_dir = get_fold_dir(dataset_name, configuration, fold, trainer, plans_identifier)
     logs = sorted(fold_dir.glob("training_log_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
     return logs[0] if logs else None
 
 
-def get_validation_summary_path(dataset_name: str, configuration: str, fold: int) -> Path:
+def get_validation_summary_path(
+    dataset_name: str, configuration: str, fold: int, trainer: str, plans_identifier: str
+) -> Path:
     return (
         Path(settings.DATA_DIR)
         / "results"
         / dataset_name
-        / f"nnUNetTrainer__nnUNetPlans__{configuration}"
+        / f"{trainer}__{plans_identifier}__{configuration}"
         / f"fold_{fold}"
         / "validation"
         / "summary.json"
@@ -99,8 +103,10 @@ def setup_dataset(zip_path: str, dataset_name: str) -> None:
         Dataset###_Name/imagesTr/...
         Dataset###_Name/labelsTr/...
         Dataset###_Name/dataset.json
-        Dataset###_Name/dataset_fingerprint.json   <- goes to preprocessed/
-        Dataset###_Name/nnUNetPlans.json            <- goes to preprocessed/
+        Dataset###_Name/dataset_fingerprint.json     <- goes to preprocessed/
+        Dataset###_Name/plan_summary.json            <- goes to preprocessed/
+        Dataset###_Name/<planner>Plans.json          <- goes to preprocessed/ (name varies by planner,
+                                                          e.g. nnUNetPlans.json, nnUNetResEncUNetMPlans.json)
     """
     data_dir = Path(settings.DATA_DIR)
     raw_dest = data_dir / "raw"
@@ -109,8 +115,11 @@ def setup_dataset(zip_path: str, dataset_name: str) -> None:
     raw_dest.mkdir(parents=True, exist_ok=True)
     preprocessed_dest.mkdir(parents=True, exist_ok=True)
 
-    plan_files = {"dataset_fingerprint.json", "nnUNetPlans.json"}
+    fixed_plan_files = {"dataset_fingerprint.json", "plan_summary.json"}
     dual_files = {"dataset.json"}  # goes to both raw/ and preprocessed/
+
+    def _is_plan_file(basename: str) -> bool:
+        return basename in fixed_plan_files or basename.endswith("Plans.json")
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         for member in zf.namelist():
@@ -118,7 +127,7 @@ def setup_dataset(zip_path: str, dataset_name: str) -> None:
             if not basename:
                 continue  # skip directory entries
 
-            if basename in plan_files:
+            if _is_plan_file(basename):
                 dest = preprocessed_dest / basename
                 with zf.open(member) as src, open(dest, "wb") as dst:
                     shutil.copyfileobj(src, dst)
@@ -156,12 +165,16 @@ def is_dataset_downloaded(dataset_id: str) -> bool:
     return zip_path.exists() and zip_path.stat().st_size > 0
 
 
-PREPROCESSING_FLAG = "preprocessing_completed.txt"
+def _preprocessing_flag_name(plans_identifier: str) -> str:
+    # Namespaced by plans identifier: a dataset preprocessed under one planner's
+    # plans (e.g. nnUNetPlans) hasn't necessarily been preprocessed for another
+    # (e.g. nnUNetResEncUNetMPlans), so a single shared flag would be wrong.
+    return f"preprocessing_completed_{plans_identifier}.txt"
 
 
-def is_preprocessing_done(dataset_name: str) -> bool:
-    """Return True if the preprocessing completion flag file exists."""
-    flag = Path(settings.DATA_DIR) / "preprocessed" / dataset_name / PREPROCESSING_FLAG
+def is_preprocessing_done(dataset_name: str, plans_identifier: str) -> bool:
+    """Return True if the preprocessing completion flag file exists for this plans identifier."""
+    flag = Path(settings.DATA_DIR) / "preprocessed" / dataset_name / _preprocessing_flag_name(plans_identifier)
     return flag.exists()
 
 
@@ -172,6 +185,7 @@ def is_preprocessing_done(dataset_name: str) -> bool:
 def run_preprocess(
     job_id: str,
     dataset_name: str,
+    plans_identifier: str,
     progress_callback: Callable,
     cancel_event: Optional[threading.Event] = None,
 ) -> None:
@@ -194,6 +208,7 @@ def run_preprocess(
     slurm.write_preprocess_script(
         script_path=script_path,
         dataset_num=dataset_num,
+        plans_identifier=plans_identifier,
         log_dir=log_dir,
         data_dir=settings.DATA_DIR,
         conda_env=settings.CONDA_ENV,
@@ -252,8 +267,8 @@ def run_preprocess(
     except Exception:
         pass
 
-    # Write flag so future jobs skip preprocessing for this dataset
-    flag = Path(settings.DATA_DIR) / "preprocessed" / dataset_name / PREPROCESSING_FLAG
+    # Write flag so future jobs skip preprocessing for this dataset+plans combination
+    flag = Path(settings.DATA_DIR) / "preprocessed" / dataset_name / _preprocessing_flag_name(plans_identifier)
     flag.write_text(f"Preprocessing completed for job {job_id} (SLURM job {slurm_job_id})\n")
     logger.info(f"Preprocessing complete for {dataset_name}")
 
@@ -267,6 +282,8 @@ def run_train_fold(
     dataset_name: str,
     configuration: str,
     fold: int,
+    trainer: str,
+    plans_identifier: str,
     progress_callback: Callable,
     log_upload_callback: Callable,
     cancel_event: Optional[threading.Event] = None,
@@ -292,6 +309,8 @@ def run_train_fold(
         dataset_num=dataset_num,
         configuration=configuration,
         fold=fold,
+        trainer=trainer,
+        plans_identifier=plans_identifier,
         log_dir=log_dir,
         data_dir=settings.DATA_DIR,
         conda_env=settings.CONDA_ENV,
@@ -308,7 +327,7 @@ def run_train_fold(
         while not stop_event.is_set():
             stop_event.wait(5)
 
-            log_path = find_latest_training_log(dataset_name, configuration, fold)
+            log_path = find_latest_training_log(dataset_name, configuration, fold, trainer, plans_identifier)
             if log_path is None:
                 continue
 
@@ -353,7 +372,7 @@ def run_train_fold(
         monitor_thread.join(timeout=10)
 
     # Final log upload
-    log_path = find_latest_training_log(dataset_name, configuration, fold)
+    log_path = find_latest_training_log(dataset_name, configuration, fold, trainer, plans_identifier)
     if log_path is not None:
         try:
             log_upload_callback(fold, log_path.read_text(errors="replace"))
@@ -372,6 +391,8 @@ def run_train_all_folds(
     dataset_name: str,
     configuration: str,
     folds: list,
+    trainer: str,
+    plans_identifier: str,
     progress_callback: Callable,
     log_upload_callback: Callable,
     cancel_event: Optional[threading.Event] = None,
@@ -406,6 +427,8 @@ def run_train_all_folds(
             dataset_num=dataset_num,
             configuration=configuration,
             fold=fold,
+            trainer=trainer,
+            plans_identifier=plans_identifier,
             log_dir=log_dir,
             data_dir=settings.DATA_DIR,
             conda_env=settings.CONDA_ENV,
@@ -454,7 +477,7 @@ def run_train_all_folds(
         last_log_upload = time.time()
         while not stop_monitor.is_set():
             stop_monitor.wait(5)
-            log_path = find_latest_training_log(dataset_name, configuration, fold)
+            log_path = find_latest_training_log(dataset_name, configuration, fold, trainer, plans_identifier)
             if log_path is None:
                 continue
             try:
@@ -507,7 +530,7 @@ def run_train_all_folds(
 
     # Final log uploads
     for fold in folds:
-        log_path = find_latest_training_log(dataset_name, configuration, fold)
+        log_path = find_latest_training_log(dataset_name, configuration, fold, trainer, plans_identifier)
         if log_path is not None:
             try:
                 log_upload_callback(fold, log_path.read_text(errors="replace"))
@@ -589,9 +612,11 @@ def _parse_all_epochs(log_content: str) -> dict:
 # Validation results
 # ---------------------------------------------------------------------------
 
-def read_validation_result(dataset_name: str, configuration: str, fold: int) -> Optional[str]:
+def read_validation_result(
+    dataset_name: str, configuration: str, fold: int, trainer: str, plans_identifier: str
+) -> Optional[str]:
     """Read fold validation summary.json and return as JSON string, or None if missing."""
-    path = get_validation_summary_path(dataset_name, configuration, fold)
+    path = get_validation_summary_path(dataset_name, configuration, fold, trainer, plans_identifier)
     if not path.exists():
         logger.warning(f"Validation summary not found: {path}")
         return None
@@ -602,7 +627,7 @@ def read_validation_result(dataset_name: str, configuration: str, fold: int) -> 
 # Model export (runs locally, not via SLURM — fast operation)
 # ---------------------------------------------------------------------------
 
-def export_model(dataset_name: str, configuration: str) -> Path:
+def export_model(dataset_name: str, configuration: str, trainer: str, plans_identifier: str) -> Path:
     """
     Export trained model to ZIP using nnUNetv2_export_model_to_zip.
     Runs locally (not via SLURM) since it is a fast post-processing step.
@@ -636,6 +661,8 @@ def export_model(dataset_name: str, configuration: str) -> Path:
         f"nnUNetv2_export_model_to_zip "
         f'-d "{dataset_num}" '
         f'-c "{configuration}" '
+        f'-tr "{trainer}" '
+        f'-p "{plans_identifier}" '
         f'-o "{output_zip}" '
         f"--not_strict"
     )

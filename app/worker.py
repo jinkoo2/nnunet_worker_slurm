@@ -134,8 +134,14 @@ def _execute_job(client: DashboardClient, job: dict):
     job_id = job["id"]
     dataset_id = job["dataset_id"]
     configuration = job["configuration"]
+    # Older jobs (created before these fields existed) fall back to nnU-Net's own defaults.
+    trainer_class = job.get("trainer") or "nnUNetTrainer"
+    plans_identifier = job.get("plans_identifier") or "nnUNetPlans"
 
-    logger.info(f"=== Job {job_id[:8]}… | dataset={dataset_id[:8]}… | config={configuration} ===")
+    logger.info(
+        f"=== Job {job_id[:8]}… | dataset={dataset_id[:8]}… | config={configuration} "
+        f"| trainer={trainer_class} | plans={plans_identifier} ==="
+    )
     _job_running.set()
     wn = settings.WORKER_NAME
 
@@ -179,7 +185,7 @@ def _execute_job(client: DashboardClient, job: dict):
 
         # 5. Preprocess via SLURM (skip if already done)
         client.update_job_status(job_id, "preprocessing")
-        if trainer.is_preprocessing_done(dataset_name):
+        if trainer.is_preprocessing_done(dataset_name, plans_identifier):
             logger.info(f"Preprocessing already done for {dataset_name}, skipping")
             notifier.on_preprocess_complete(wn, job_id)
         else:
@@ -189,7 +195,7 @@ def _execute_job(client: DashboardClient, job: dict):
             def preprocess_progress(total, done, mean_s):
                 client.report_preprocessing_progress(job_id, total, done, mean_s)
 
-            trainer.run_preprocess(job_id, dataset_name, preprocess_progress, cancel_event)
+            trainer.run_preprocess(job_id, dataset_name, plans_identifier, preprocess_progress, cancel_event)
             notifier.on_preprocess_complete(wn, job_id)
 
         # 6. Train all 5 folds via SLURM (all submitted at once, monitored in parallel)
@@ -217,6 +223,8 @@ def _execute_job(client: DashboardClient, job: dict):
             dataset_name,
             configuration,
             folds,
+            trainer_class,
+            plans_identifier,
             progress_callback=progress_cb,
             log_upload_callback=log_cb,
             cancel_event=cancel_event,
@@ -224,7 +232,7 @@ def _execute_job(client: DashboardClient, job: dict):
 
         for fold in folds:
             notifier.on_fold_complete(wn, job_id, fold)
-            summary = trainer.read_validation_result(dataset_name, configuration, fold)
+            summary = trainer.read_validation_result(dataset_name, configuration, fold, trainer_class, plans_identifier)
             if summary:
                 try:
                     client.report_validation_result(job_id, fold, summary)
@@ -237,7 +245,7 @@ def _execute_job(client: DashboardClient, job: dict):
         # 7. Export + upload model (runs locally)
         client.update_job_status(job_id, "uploading")
         notifier.on_export_start(wn, job_id)
-        model_zip = trainer.export_model(dataset_name, configuration)
+        model_zip = trainer.export_model(dataset_name, configuration, trainer_class, plans_identifier)
         client.upload_model(job_id, str(model_zip))
         logger.info("Model uploaded.")
         notifier.on_upload_complete(wn, job_id)

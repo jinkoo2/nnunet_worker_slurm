@@ -165,6 +165,7 @@ def _conda_block(conda_env: str) -> str:
 def write_preprocess_script(
     script_path: Path,
     dataset_num: str,
+    plans_identifier: str,
     log_dir: Path,
     data_dir: str,
     conda_env: str,
@@ -206,6 +207,7 @@ def write_preprocess_script(
 
         nnUNetv2_preprocess \\
             -d "{dataset_num}" \\
+            -plans_name "{plans_identifier}" \\
             -np "{settings.NUM_PREPROCESSING_WORKERS}" \\
             --verbose
 
@@ -224,6 +226,8 @@ def write_train_script(
     dataset_num: str,
     configuration: str,
     fold: int,
+    trainer: str,
+    plans_identifier: str,
     log_dir: Path,
     data_dir: str,
     conda_env: str,
@@ -250,6 +254,8 @@ def write_train_script(
         echo "Dataset num:     {dataset_num}"
         echo "Configuration:   {configuration}"
         echo "Fold:            {fold}"
+        echo "Trainer:         {trainer}"
+        echo "Plans:           {plans_identifier}"
         echo ""
 
         export nnUNet_raw="{data_dir}/raw"
@@ -267,6 +273,8 @@ def write_train_script(
         nnUNetv2_train \\
             -device cuda \\
             -num_gpus {settings.SLURM_GPUS_TRAIN} \\
+            -tr "{trainer}" \\
+            -p "{plans_identifier}" \\
             --c \\
             "{dataset_num}" \\
             "{configuration}" \\
