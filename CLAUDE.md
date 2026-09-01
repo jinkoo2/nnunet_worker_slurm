@@ -63,7 +63,12 @@ poll loop (every POLL_INTERVAL_S):
   if job found → execute_job (blocking)
 
 execute_job:
-  1. PUT /api/jobs/{id}/status  → "assigned"
+  0. Resolve trainer  = job["trainer"] or settings.TRAINER_CLASS (per-job override, else this worker's default)
+     Resolve plans    = job["plans_identifier"] or "nnUNetPlans" (set by the dashboard from the
+                         dataset's detected plan file at job-creation time; "nnUNetPlans" fallback
+                         is only for jobs created before this field existed)
+  1. PUT /api/jobs/{id}/status  → "assigned" (reports the *resolved* trainer/plans back to the
+     dashboard, since a job created without an explicit trainer only becomes concrete here)
   2. GET /api/datasets/{id}     → get dataset_name
   3. GET /api/datasets/{id}/download → stream ZIP to disk
   4. Extract ZIP → DATA_DIR/raw/{dataset_name}/ + DATA_DIR/preprocessed/{dataset_name}/
@@ -122,7 +127,7 @@ DATA_DIR/
 2026-03-01 22:05:48: Epoch time: 125.29 s   ← marks end of epoch block
 ```
 
-Log file location: `DATA_DIR/results/{dataset_name}/nnUNetTrainer__nnUNetPlans__{configuration}/fold_{fold}/training_log_*.txt`
+Log file location: `DATA_DIR/results/{dataset_name}/{trainer}__{plans_identifier}__{configuration}/fold_{fold}/training_log_*.txt`
 
 ## Configuration (`.env`)
 
@@ -140,6 +145,7 @@ Log file location: `DATA_DIR/results/{dataset_name}/nnUNetTrainer__nnUNetPlans__
 | `DATA_DIR` | `/data/nnunet_trainer_data` | Working directory |
 | `CONDA_ENV` | `nnunet_trainer` | Conda env with nnunetv2 |
 | `NUM_PREPROCESSING_WORKERS` | `8` | `-np` argument for preprocessing |
+| `TRAINER_CLASS` | `nnUNetTrainer` | This worker's default trainer, used when a job doesn't specify one. Jobs from the dashboard can override it per-job (`job["trainer"]`) — see below. |
 | `SLURM_PARTITION_PREPROCESS` | `b40x4` | SLURM partition for preprocessing (CPU-only) |
 | `SLURM_CPUS_PREPROCESS` | `16` | CPUs per preprocessing job |
 | `SLURM_MEM_PREPROCESS` | `128G` | Memory for preprocessing job |

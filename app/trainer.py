@@ -165,6 +165,29 @@ def is_dataset_downloaded(dataset_id: str) -> bool:
     return zip_path.exists() and zip_path.stat().st_size > 0
 
 
+# When these exist under preprocessed/Datasetxxx_yyy/, we consider the dataset
+# already extracted (zip may have been removed to save space). dataset.json and
+# dataset_fingerprint.json always use these names regardless of planner; the plans
+# file itself varies (nnUNetPlans.json vs nnUNetResEncUNetMPlans.json etc.) so it's
+# matched by the "*Plans.json" convention rather than a fixed name.
+EXTRACTED_JSON_MARKERS = ("dataset.json", "dataset_fingerprint.json")
+
+
+def is_dataset_already_extracted(dataset_name: str) -> bool:
+    """
+    Return True if preprocessed/dataset_name/ contains the JSON files that
+    indicate the dataset was previously extracted (raw + preprocessed layout present).
+    Allows skipping download/extract when the zip was removed to save space.
+    """
+    preprocessed_dir = Path(settings.DATA_DIR) / "preprocessed" / dataset_name
+    if not preprocessed_dir.is_dir():
+        return False
+    for name in EXTRACTED_JSON_MARKERS:
+        if not (preprocessed_dir / name).is_file():
+            return False
+    return any(preprocessed_dir.glob("*Plans.json"))
+
+
 def _preprocessing_flag_name(plans_identifier: str) -> str:
     # Namespaced by plans identifier: a dataset preprocessed under one planner's
     # plans (e.g. nnUNetPlans) hasn't necessarily been preprocessed for another
@@ -408,6 +431,20 @@ def run_train_all_folds(
     Calls log_upload_callback(fold, text) periodically per fold.
     """
     dataset_num = get_dataset_num(dataset_name)
+
+    # Skip folds whose validation is already complete
+    pending_folds = []
+    for fold in folds:
+        if get_validation_summary_path(dataset_name, configuration, fold).exists():
+            logger.info(f"Fold {fold} validation already complete (summary.json exists) — skipping")
+        else:
+            pending_folds.append(fold)
+
+    if not pending_folds:
+        logger.info("All folds already complete — nothing to submit")
+        return
+
+    folds = pending_folds
     logger.info(
         f"Submitting {len(folds)} training SLURM jobs in parallel: "
         f"{dataset_name} {configuration} folds={folds}"

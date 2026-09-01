@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # nnUNet
     NUM_PREPROCESSING_WORKERS: int = 8
+    TRAINER_CLASS: str = "nnUNetTrainer"
 
     # SLURM — preprocessing (CPU-only job on b40x4 partition)
     SLURM_PARTITION_PREPROCESS: str = "b40x4"

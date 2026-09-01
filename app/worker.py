@@ -134,8 +134,12 @@ def _execute_job(client: DashboardClient, job: dict):
     job_id = job["id"]
     dataset_id = job["dataset_id"]
     configuration = job["configuration"]
-    # Older jobs (created before these fields existed) fall back to nnU-Net's own defaults.
-    trainer_class = job.get("trainer") or "nnUNetTrainer"
+    # Jobs created before the dashboard supported these fields (or where the admin
+    # left the dashboard's trainer field at its default) fall back to this worker's
+    # own configured TRAINER_CLASS — e.g. nnUNetTrainerNoMirroring for this group's
+    # anatomy — rather than nnU-Net's bare default, so a per-job override in the
+    # dashboard is opt-in, not silently required to keep this worker's policy.
+    trainer_class = job.get("trainer") or settings.TRAINER_CLASS
     plans_identifier = job.get("plans_identifier") or "nnUNetPlans"
 
     logger.info(
@@ -153,7 +157,10 @@ def _execute_job(client: DashboardClient, job: dict):
 
     try:
         # 1. Acknowledge job
-        client.update_job_status(job_id, "assigned")
+        # Report the resolved trainer/plans (not just what the dashboard sent — a job
+        # created without an explicit trainer resolves here to this worker's own
+        # TRAINER_CLASS) so the dashboard shows what actually ran, not just what was requested.
+        client.update_job_status(job_id, "assigned", trainer=trainer_class, plans_identifier=plans_identifier)
 
         # 2. Get dataset metadata
         dataset_info = client.get_dataset(dataset_id)
@@ -161,13 +168,19 @@ def _execute_job(client: DashboardClient, job: dict):
         logger.info(f"Dataset name: {dataset_name}")
         notifier.on_job_start(wn, job_id, dataset_name, configuration)
 
-        # 3. Download ZIP (skip if already on disk)
+        # 3. Download ZIP (skip if already on disk or if preprocessed has the 3 JSONs)
         data_dir = Path(settings.DATA_DIR)
         downloads_dir = data_dir / "downloads"
         downloads_dir.mkdir(parents=True, exist_ok=True)
         zip_path = downloads_dir / f"{dataset_id}.zip"
+        already_extracted = trainer.is_dataset_already_extracted(dataset_name)
 
-        if trainer.is_dataset_downloaded(dataset_id):
+        if already_extracted:
+            logger.info(
+                f"Preprocessed {dataset_name} has dataset.json, dataset_fingerprint.json, nnUNetPlans.json; "
+                "skipping download and extraction (zip may have been removed)"
+            )
+        elif trainer.is_dataset_downloaded(dataset_id):
             mb = zip_path.stat().st_size / 1024 / 1024
             logger.info(f"Dataset ZIP already on disk ({mb:.1f} MB), skipping download")
         else:
@@ -176,10 +189,12 @@ def _execute_job(client: DashboardClient, job: dict):
             mb = zip_path.stat().st_size / 1024 / 1024
             notifier.on_download_complete(wn, job_id, mb)
 
-        # 4. Extract to nnUNet directory layout (skip if raw data already present)
+        # 4. Extract to nnUNet directory layout (skip if raw present or already_extracted)
         raw_dir = data_dir / "raw" / dataset_name
         if raw_dir.exists():
             logger.info(f"Raw dataset already extracted to {raw_dir}, skipping extraction")
+        elif already_extracted:
+            logger.info(f"Already extracted (3 JSONs in preprocessed/{dataset_name}), skipping extraction")
         else:
             trainer.setup_dataset(str(zip_path), dataset_name)
 
