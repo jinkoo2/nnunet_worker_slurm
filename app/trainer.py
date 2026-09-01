@@ -63,7 +63,7 @@ def get_fold_dir(dataset_name: str, configuration: str, fold: int) -> Path:
         Path(settings.DATA_DIR)
         / "results"
         / dataset_name
-        / f"nnUNetTrainer__nnUNetPlans__{configuration}"
+        / f"{settings.TRAINER_CLASS}__nnUNetPlans__{configuration}"
         / f"fold_{fold}"
     )
 
@@ -80,7 +80,7 @@ def get_validation_summary_path(dataset_name: str, configuration: str, fold: int
         Path(settings.DATA_DIR)
         / "results"
         / dataset_name
-        / f"nnUNetTrainer__nnUNetPlans__{configuration}"
+        / f"{settings.TRAINER_CLASS}__nnUNetPlans__{configuration}"
         / f"fold_{fold}"
         / "validation"
         / "summary.json"
@@ -670,6 +670,7 @@ def export_model(dataset_name: str, configuration: str) -> Path:
         f"nnUNetv2_export_model_to_zip "
         f'-d "{dataset_num}" '
         f'-c "{configuration}" '
+        f'-tr "{settings.TRAINER_CLASS}" '
         f'-o "{output_zip}" '
         f"--not_strict"
     )

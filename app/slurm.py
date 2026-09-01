@@ -263,12 +263,13 @@ def write_train_script(
 
         echo "nnUNetv2_train: ${{CONDA_PREFIX}}/bin/nnUNetv2_train"
         echo ""
-        echo "=== nnUNetv2_train: {dataset_num} {configuration} fold {fold} ==="
+        echo "=== nnUNetv2_train: {dataset_num} {configuration} fold {fold} (trainer={settings.TRAINER_CLASS}) ==="
         echo ""
 
         ${{CONDA_PREFIX}}/bin/nnUNetv2_train \\
             -device cuda \\
             -num_gpus {settings.SLURM_GPUS_TRAIN} \\
+            -tr "{settings.TRAINER_CLASS}" \\
             --c \\
             "{dataset_num}" \\
             "{configuration}" \\

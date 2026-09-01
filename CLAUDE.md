@@ -140,6 +140,7 @@ Log file location: `DATA_DIR/results/{dataset_name}/nnUNetTrainer__nnUNetPlans__
 | `DATA_DIR` | `/data/nnunet_trainer_data` | Working directory |
 | `CONDA_ENV` | `nnunet_trainer` | Conda env with nnunetv2 |
 | `NUM_PREPROCESSING_WORKERS` | `8` | `-np` argument for preprocessing |
+| `TRAINER_CLASS` | `nnUNetTrainer` | `-tr` argument passed to `nnUNetv2_train` / `nnUNetv2_export_model_to_zip`; also used to build the `{TRAINER_CLASS}__nnUNetPlans__{configuration}` result folder name |
 | `SLURM_PARTITION_PREPROCESS` | `b40x4` | SLURM partition for preprocessing (CPU-only) |
 | `SLURM_CPUS_PREPROCESS` | `16` | CPUs per preprocessing job |
 | `SLURM_MEM_PREPROCESS` | `128G` | Memory for preprocessing job |
