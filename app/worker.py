@@ -212,16 +212,28 @@ def _execute_job(client: DashboardClient, job: dict):
         downloads_dir.mkdir(parents=True, exist_ok=True)
         zip_path = downloads_dir / f"{dataset_id}.zip"
         already_extracted = trainer.is_dataset_already_extracted(dataset_name)
+        # A dataset extracted once under a different planner (or re-planned and
+        # re-uploaded to the dashboard under the same dataset_id since this
+        # worker last downloaded it) won't have *this job's* plans file even
+        # though the generic "already extracted" markers are present. Force a
+        # fresh download+extraction in that case rather than silently trying
+        # to preprocess against a plans file that was never fetched.
+        has_required_plans = trainer.has_plans_file(dataset_name, plans_identifier)
 
-        if already_extracted:
+        if already_extracted and has_required_plans:
             logger.info(
-                f"Preprocessed {dataset_name} has dataset.json, dataset_fingerprint.json, nnUNetPlans.json; "
+                f"Preprocessed {dataset_name} has dataset.json, dataset_fingerprint.json, {plans_identifier}.json; "
                 "skipping download and extraction (zip may have been removed)"
             )
-        elif trainer.is_dataset_downloaded(dataset_id):
+        elif trainer.is_dataset_downloaded(dataset_id) and has_required_plans:
             mb = zip_path.stat().st_size / 1024 / 1024
             logger.info(f"Dataset ZIP already on disk ({mb:.1f} MB), skipping download")
         else:
+            if not has_required_plans:
+                logger.info(
+                    f"{plans_identifier}.json not found under preprocessed/{dataset_name} — "
+                    "(re)downloading dataset in case it was re-planned since we last fetched it"
+                )
             notifier.on_download_start(wn, job_id, dataset_name)
             client.download_dataset(dataset_id, str(zip_path))
             mb = zip_path.stat().st_size / 1024 / 1024
@@ -229,9 +241,9 @@ def _execute_job(client: DashboardClient, job: dict):
 
         # 4. Extract to nnUNet directory layout (skip if raw present or already_extracted)
         raw_dir = data_dir / "raw" / dataset_name
-        if raw_dir.exists():
+        if raw_dir.exists() and has_required_plans:
             logger.info(f"Raw dataset already extracted to {raw_dir}, skipping extraction")
-        elif already_extracted:
+        elif already_extracted and has_required_plans:
             logger.info(f"Already extracted (3 JSONs in preprocessed/{dataset_name}), skipping extraction")
         else:
             trainer.setup_dataset(str(zip_path), dataset_name)

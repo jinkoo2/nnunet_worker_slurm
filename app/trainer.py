@@ -187,6 +187,22 @@ def is_dataset_downloaded(dataset_id: str) -> bool:
 EXTRACTED_JSON_MARKERS = ("dataset.json", "dataset_fingerprint.json")
 
 
+def has_plans_file(dataset_name: str, plans_identifier: str) -> bool:
+    """
+    Return True if preprocessed/dataset_name/{plans_identifier}.json exists.
+
+    A dataset extracted once under one planner (e.g. standard nnUNetPlans)
+    won't have a later job's plans file (e.g. nnUNetResEncUNetMPlans) even
+    though is_dataset_already_extracted()'s generic markers are all present —
+    that check only confirms *some* plan was extracted, not *this job's* plan.
+    Callers should force a fresh download+extraction when this is False,
+    since the plans file the job actually needs may only exist in a zip that
+    was (re-)uploaded to the dashboard under the same dataset_id after this
+    worker's local copy was already downloaded.
+    """
+    return (Path(settings.DATA_DIR) / "preprocessed" / dataset_name / f"{plans_identifier}.json").is_file()
+
+
 def is_dataset_already_extracted(dataset_name: str) -> bool:
     """
     Return True if preprocessed/dataset_name/ contains the JSON files that
