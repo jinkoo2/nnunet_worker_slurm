@@ -171,10 +171,11 @@ class DashboardClient:
         )
 
     def report_training_progress(
-        self, job_id: str, fold: int, epoch: int,
+        self, job_id: str, fold, epoch: int,
         learning_rate: float = None, train_loss: float = None,
         val_loss: float = None, pseudo_dice: str = None, epoch_time_s: float = None,
     ) -> None:
+        """``fold`` is an int (0-4) or ``\"all\"``."""
         self._post(
             f"/api/jobs/{job_id}/training_progress",
             json={
@@ -188,13 +189,13 @@ class DashboardClient:
             },
         )
 
-    def report_validation_result(self, job_id: str, fold: int, summary_json: str) -> None:
+    def report_validation_result(self, job_id: str, fold, summary_json: str) -> None:
         self._post(
             f"/api/jobs/{job_id}/validation_result",
             json={"fold": fold, "summary_json": summary_json},
         )
 
-    def upload_log(self, job_id: str, fold: int, text: str) -> None:
+    def upload_log(self, job_id: str, fold, text: str) -> None:
         r = requests.post(
             f"{self.base}/api/jobs/{job_id}/log/{fold}",
             headers=self.headers,

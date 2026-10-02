@@ -267,14 +267,17 @@ def write_train_script(
     job_id: str,
     dataset_num: str,
     configuration: str,
-    fold: int,
+    fold,  # int (0-4) or "all"
     trainer: str,
     plans_identifier: str,
     log_dir: Path,
     data_dir: str,
     conda_env: str,
 ) -> None:
-    """Write a SLURM batch script for nnUNetv2_train (single fold, with GPU)."""
+    """Write a SLURM batch script for nnUNetv2_train (single fold, with GPU).
+
+    ``fold`` may be an int (0-4) or the string ``\"all\"`` (train on every case).
+    """
     slurm_log = log_dir / "slurm_%j.log"
     header = _slurm_header(
         job_name=f"nnunet_tr_{dataset_num}_{configuration}_f{fold}",
@@ -305,12 +308,14 @@ def write_train_script(
         export nnUNet_preprocessed="{data_dir}/preprocessed"
         export nnUNet_results="{data_dir}/results"
         export TORCH_COMPILE_DISABLE=1
+        export nnUNet_def_n_proc={settings.NNUNET_DEF_N_PROC}
         export TMPDIR="{data_dir}/tmp"
         mkdir -p "$TMPDIR"
 
         {_conda_block(conda_env)}
 
         echo "nnUNetv2_train: ${{CONDA_PREFIX}}/bin/nnUNetv2_train"
+        echo "nnUNet_def_n_proc=$nnUNet_def_n_proc"
         echo ""
         echo "=== nnUNetv2_train: {dataset_num} {configuration} fold {fold} (trainer={trainer}) ==="
         echo ""

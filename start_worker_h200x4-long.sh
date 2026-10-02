@@ -1,9 +1,9 @@
 #!/bin/bash
-# Start nnunet_worker_slurm using .env.b40x4
+# Start nnunet_worker_slurm using .env.h200x4-long
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE=".env.h200x8"
+ENV_FILE=".env.h200x4-long"
 
 # Parse CONDA_ENV from the env file
 CONDA_ENV=$(grep -E '^CONDA_ENV=' "$SCRIPT_DIR/$ENV_FILE" | cut -d= -f2 | tr -d ' \r')

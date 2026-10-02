@@ -263,10 +263,11 @@ def _execute_job(client: DashboardClient, job: dict):
             trainer.run_preprocess(job_id, dataset_name, plans_identifier, preprocess_progress, cancel_event)
             notifier.on_preprocess_complete(wn, job_id)
 
-        # 6. Train all 5 folds via SLURM (all submitted at once, monitored in parallel)
+        # 6. Train folds 0-4 + fold_all via SLURM (all submitted at once, monitored in parallel)
+        # fold_all trains on every case (single deployable model); 0-4 remain for CV ensemble.
         client.update_job_status(job_id, "training")
 
-        folds = list(range(5))
+        folds = list(range(5)) + ["all"]
         for fold in folds:
             notifier.on_fold_start(wn, job_id, fold)
 

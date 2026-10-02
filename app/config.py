@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # nnUNet
     NUM_PREPROCESSING_WORKERS: int = 8
     TRAINER_CLASS: str = "nnUNetTrainer"
+    # Caps training DA + validation export process pool (nnUNet_def_n_proc).
+    # Lower this on large fullres cases to avoid host-RAM OOM during validation.
+    NNUNET_DEF_N_PROC: int = 8
 
     # SLURM — preprocessing (CPU-only job on b40x4 partition)
     SLURM_PARTITION_PREPROCESS: str = "b40x4"

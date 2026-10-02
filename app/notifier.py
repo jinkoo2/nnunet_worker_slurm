@@ -54,12 +54,16 @@ def on_preprocess_complete(worker_name: str, job_id: str) -> None:
     notify(f"{_tag(worker_name)} Job {job_id[:8]}... preprocessing complete")
 
 
-def on_fold_start(worker_name: str, job_id: str, fold: int) -> None:
-    notify(f"{_tag(worker_name)} Job {job_id[:8]}... fold {fold}/4 training started")
+def _fold_label(fold) -> str:
+    return "all" if fold == "all" else f"{fold}/4"
 
 
-def on_fold_complete(worker_name: str, job_id: str, fold: int) -> None:
-    notify(f"{_tag(worker_name)} Job {job_id[:8]}... fold {fold}/4 training complete")
+def on_fold_start(worker_name: str, job_id: str, fold) -> None:
+    notify(f"{_tag(worker_name)} Job {job_id[:8]}... fold {_fold_label(fold)} training started")
+
+
+def on_fold_complete(worker_name: str, job_id: str, fold) -> None:
+    notify(f"{_tag(worker_name)} Job {job_id[:8]}... fold {_fold_label(fold)} training complete")
 
 
 def on_export_start(worker_name: str, job_id: str) -> None:

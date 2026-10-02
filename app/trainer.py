@@ -58,7 +58,8 @@ def get_nnunet_env() -> dict:
     return env
 
 
-def get_fold_dir(dataset_name: str, configuration: str, fold: int, trainer: str, plans_identifier: str) -> Path:
+def get_fold_dir(dataset_name: str, configuration: str, fold, trainer: str, plans_identifier: str) -> Path:
+    """``fold`` is an int (0-4) or ``\"all\"`` → directory ``fold_0`` … ``fold_all``."""
     return (
         Path(settings.DATA_DIR)
         / "results"
@@ -69,7 +70,7 @@ def get_fold_dir(dataset_name: str, configuration: str, fold: int, trainer: str,
 
 
 def find_latest_training_log(
-    dataset_name: str, configuration: str, fold: int, trainer: str, plans_identifier: str
+    dataset_name: str, configuration: str, fold, trainer: str, plans_identifier: str
 ) -> Optional[Path]:
     """Return the most recently modified training_log_*.txt in the fold directory, or None."""
     fold_dir = get_fold_dir(dataset_name, configuration, fold, trainer, plans_identifier)
@@ -78,7 +79,7 @@ def find_latest_training_log(
 
 
 def get_validation_summary_path(
-    dataset_name: str, configuration: str, fold: int, trainer: str, plans_identifier: str
+    dataset_name: str, configuration: str, fold, trainer: str, plans_identifier: str
 ) -> Path:
     return (
         Path(settings.DATA_DIR)
@@ -344,7 +345,7 @@ def run_train_fold(
     job_id: str,
     dataset_name: str,
     configuration: str,
-    fold: int,
+    fold,  # int (0-4) or "all"
     trainer: str,
     plans_identifier: str,
     progress_callback: Callable,
@@ -492,19 +493,24 @@ def run_train_all_folds(
 
     # Reattach to any already-running SLURM jobs for this job_id (e.g. this
     # worker crashed/restarted mid-training) instead of resubmitting
-    # duplicates. Comment format is "{job_id}:fold{N}" — see write_train_script.
+    # duplicates. Comment format is "{job_id}:fold{N}" or "...:foldall"
+    # — see write_train_script.
     reattach: dict = {}
     for entry in slurm.find_by_comment(f"{job_id}:fold", exact=False):
         if not entry["name"].startswith("nnunet_tr_"):
             continue
-        m = re.search(r":fold(\d+)$", entry["comment"])
+        m = re.search(r":fold(all|\d+)$", entry["comment"])
         if m:
-            reattach[int(m.group(1))] = entry["slurm_job_id"]
+            key = m.group(1) if m.group(1) == "all" else int(m.group(1))
+            reattach[key] = entry["slurm_job_id"]
 
     logger.info(
         f"Submitting {len(folds)} training SLURM jobs in parallel: "
         f"{dataset_name} {configuration} folds={folds}"
-        + (f" (reattaching to {sorted(reattach.keys())})" if reattach else "")
+        + (
+            f" (reattaching to {sorted(reattach.keys(), key=lambda x: (1, str(x)) if x == 'all' else (0, x))})"
+            if reattach else ""
+        )
     )
 
     # Submit all folds (skip ones we're reattaching to)
@@ -543,7 +549,7 @@ def run_train_all_folds(
     fold_exceptions: dict = {}
     lock = threading.Lock()
 
-    def run_fold_waiter(fold: int, slurm_job_id: str) -> None:
+    def run_fold_waiter(fold, slurm_job_id: str) -> None:
         current_job_id = slurm_job_id
         script_path = scripts_dir / f"{job_id}_train_{configuration}_fold{fold}.sh"
         try:
@@ -568,7 +574,7 @@ def run_train_all_folds(
 
     stop_monitor = threading.Event()
 
-    def run_fold_monitor(fold: int) -> None:
+    def run_fold_monitor(fold) -> None:
         last_reported_epoch = -1
         last_log_upload = time.time()
         while not stop_monitor.is_set():
@@ -709,7 +715,7 @@ def _parse_all_epochs(log_content: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def read_validation_result(
-    dataset_name: str, configuration: str, fold: int, trainer: str, plans_identifier: str
+    dataset_name: str, configuration: str, fold, trainer: str, plans_identifier: str
 ) -> Optional[str]:
     """Read fold validation summary.json and return as JSON string, or None if missing."""
     path = get_validation_summary_path(dataset_name, configuration, fold, trainer, plans_identifier)
@@ -727,6 +733,7 @@ def export_model(dataset_name: str, configuration: str, trainer: str, plans_iden
     """
     Export trained model to ZIP using nnUNetv2_export_model_to_zip.
     Runs locally (not via SLURM) since it is a fast post-processing step.
+    Includes folds 0-4 and fold_all when present (--not_strict skips missing).
     Returns the path to the created ZIP file.
     """
     import subprocess
@@ -759,6 +766,7 @@ def export_model(dataset_name: str, configuration: str, trainer: str, plans_iden
         f'-c "{configuration}" '
         f'-tr "{trainer}" '
         f'-p "{plans_identifier}" '
+        f'-f 0 1 2 3 4 all '
         f'-o "{output_zip}" '
         f"--not_strict"
     )
