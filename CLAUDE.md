@@ -67,6 +67,10 @@ execute_job:
      Resolve plans    = job["plans_identifier"] or "nnUNetPlans" (set by the dashboard from the
                          dataset's detected plan file at job-creation time; "nnUNetPlans" fallback
                          is only for jobs created before this field existed)
+     Resolve folds    = json.loads(job["folds"]) or [0,1,2,3,4,"all"] (job["folds"] is a JSON
+                         array string set by the dashboard's Create Job dialog, each entry an
+                         int 0-4 or the literal string "all"; None/unparseable means every one
+                         of the 6 — the only-ever behavior before this field existed)
   1. PUT /api/jobs/{id}/status  → "assigned" (reports the *resolved* trainer/plans back to the
      dashboard, since a job created without an explicit trainer only becomes concrete here)
   2. GET /api/datasets/{id}     → get dataset_name
@@ -78,17 +82,24 @@ execute_job:
      monitor thread: tail slurm_{job_id}.log → parse "Preprocessing case" → POST preprocessing_progress
      wait_for_slurm_job (poll squeue/sacct every 30s)
   6. PUT status → "training"
-     submit all 5 folds simultaneously:
-       for fold in 0..4:
-         write DATA_DIR/slurm_scripts/{job_id}_train_{config}_fold{n}.sh
+     submit the resolved folds simultaneously (all 6 — CV folds 0-4 plus fold_all — unless the
+     job specified a subset). "all"/fold_all trains on every case for a single deployable
+     model; 0-4 remain for the usual CV ensemble. nnU-Net still writes a
+     validation/summary.json for fold_all, but it's evaluated against training data (there's
+     no held-out split in "all" mode), so its Dice is near-perfect and not a genuine
+     generalization estimate — confirmed directly (Dataset157_RetinaFine1p0mm's fold_all:
+     Dice 0.99999). Don't treat it as comparable to a 0-4 fold's validation score.
+       for fold in folds:
+         write DATA_DIR/slurm_scripts/{job_id}_train_{config}_fold{n}.sh  (n is 0-4 or "all")
          sbatch → SLURM job ID
      monitor all folds in parallel (one thread per fold):
        tail training_log_*.txt → parse epochs → POST training_progress every epoch
        upload log text every 60s
      wait for all SLURM jobs concurrently (one waiter thread per fold)
      if any fold fails → abort_event cancels remaining folds → raise SlurmJobFailed
-     for fold in 0..4:
-       POST validation_result from fold_{n}/validation/summary.json
+     for fold in folds:
+       POST validation_result from fold_{n}/validation/summary.json (fold_all does have
+       one, but it's evaluated against training data — see the fold_all caveat above)
   7. PUT status → "uploading"
      nnUNetv2_export_model_to_zip (runs locally, not via SLURM)
      POST /api/jobs/{id}/model

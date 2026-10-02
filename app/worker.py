@@ -1,6 +1,7 @@
 """
 Main worker loop: register → heartbeat → poll → execute jobs.
 """
+import json
 import logging
 import queue
 import threading
@@ -180,9 +181,29 @@ def _execute_job(client: DashboardClient, job: dict):
     trainer_class = job.get("trainer") or settings.TRAINER_CLASS
     plans_identifier = job.get("plans_identifier") or "nnUNetPlans"
 
+    # job["folds"] is a JSON array string set by the dashboard's Create Job dialog,
+    # e.g. "[0, 2, \"all\"]" -- each entry is an int 0-4 or the literal string "all"
+    # (fold_all: trains on every case, no CV split; see run_train_all_folds/trainer.py).
+    # None/unparseable means every one of the 6, matching this worker's only-ever
+    # behavior before per-job fold selection existed.
+    requested_folds = job.get("folds")
+    default_folds = list(range(5)) + ["all"]
+    if requested_folds:
+        try:
+            parsed = json.loads(requested_folds)
+            numeric = sorted(int(f) for f in parsed if f != "all")
+            folds = numeric + (["all"] if "all" in parsed else [])
+            if not folds:
+                folds = default_folds
+        except (ValueError, TypeError, json.JSONDecodeError):
+            logger.warning(f"Unparseable folds {requested_folds!r} on job {job_id[:8]}…, defaulting to all 6")
+            folds = default_folds
+    else:
+        folds = default_folds
+
     logger.info(
         f"=== Job {job_id[:8]}… | dataset={dataset_id[:8]}… | config={configuration} "
-        f"| trainer={trainer_class} | plans={plans_identifier} ==="
+        f"| trainer={trainer_class} | plans={plans_identifier} | folds={folds} ==="
     )
     _job_running.set()
     wn = settings.WORKER_NAME
@@ -263,11 +284,12 @@ def _execute_job(client: DashboardClient, job: dict):
             trainer.run_preprocess(job_id, dataset_name, plans_identifier, preprocess_progress, cancel_event)
             notifier.on_preprocess_complete(wn, job_id)
 
-        # 6. Train folds 0-4 + fold_all via SLURM (all submitted at once, monitored in parallel)
-        # fold_all trains on every case (single deployable model); 0-4 remain for CV ensemble.
+        # 6. Train the requested folds via SLURM (all submitted at once, monitored in parallel)
+        # fold_all ("all") trains on every case (single deployable model); 0-4 remain for
+        # CV ensemble. Default (no per-job selection) is every one of the 6, matching this
+        # worker's only-ever behavior before per-job fold selection existed.
         client.update_job_status(job_id, "training")
 
-        folds = list(range(5)) + ["all"]
         for fold in folds:
             notifier.on_fold_start(wn, job_id, fold)
 
