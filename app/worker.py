@@ -333,7 +333,7 @@ def _execute_job(client: DashboardClient, job: dict):
         # 7. Export + upload model (runs locally)
         client.update_job_status(job_id, "uploading")
         notifier.on_export_start(wn, job_id)
-        model_zip = trainer.export_model(dataset_name, configuration, trainer_class, plans_identifier)
+        model_zip = trainer.export_model(dataset_name, configuration, trainer_class, plans_identifier, folds)
         client.upload_model(job_id, str(model_zip))
         logger.info("Model uploaded.")
         notifier.on_upload_complete(wn, job_id)

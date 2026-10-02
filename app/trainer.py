@@ -729,11 +729,13 @@ def read_validation_result(
 # Model export (runs locally, not via SLURM — fast operation)
 # ---------------------------------------------------------------------------
 
-def export_model(dataset_name: str, configuration: str, trainer: str, plans_identifier: str) -> Path:
+def export_model(dataset_name: str, configuration: str, trainer: str, plans_identifier: str, folds: list) -> Path:
     """
     Export trained model to ZIP using nnUNetv2_export_model_to_zip.
     Runs locally (not via SLURM) since it is a fast post-processing step.
-    Includes folds 0-4 and fold_all when present (--not_strict skips missing).
+    Exports exactly the folds that were trained for this job (nnUNetv2_export_model_to_zip
+    asserts that every fold passed to -f exists, so passing the full 0-4+all set when only
+    a subset was actually trained would crash the export).
     Returns the path to the created ZIP file.
     """
     import subprocess
@@ -759,6 +761,7 @@ def export_model(dataset_name: str, configuration: str, trainer: str, plans_iden
         if conda_profile
         else ""
     )
+    folds_arg = " ".join(str(f) for f in folds)
     cmd = (
         f"{activate}"
         f"nnUNetv2_export_model_to_zip "
@@ -766,7 +769,7 @@ def export_model(dataset_name: str, configuration: str, trainer: str, plans_iden
         f'-c "{configuration}" '
         f'-tr "{trainer}" '
         f'-p "{plans_identifier}" '
-        f'-f 0 1 2 3 4 all '
+        f'-f {folds_arg} '
         f'-o "{output_zip}" '
         f"--not_strict"
     )
